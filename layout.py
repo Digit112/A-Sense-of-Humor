@@ -75,31 +75,11 @@ class ui_spacing:
 		else:
 			self.bmar = bmar
 
-# Provides the render() function for various UI widgets such as buttons, panels, and labels which require it to render their backgrounds.
-class renderable:
-	def render(self, screen, w):
-		pass
-
-# Draws a rectangle of the specified color to the screen.
-class rect_r(renderable):
-	def __init__(self, color=(0, 0, 0)):
-		self.color = color
-	
-	def render(self, screen, w):
-		pg.draw.rect(screen, self.color, (w.l, w.t, w.w, w.h))
-
-class hitbox_r(renderable):
-	def __init__(self, color=(0, 0, 0)):
-		self.color = color
-	
-	def render(self, screen, w):
-		pg.draw.rect(screen, self.color, (w.l, w.t, w.w, w.h), width=3)
-
 # Stores a 9-sliced asset. This class contains the 9 sections of the image that objects can request repeated versions of via the get_repeated() method.
 # When making a get_repeated() call, the cropped version of this asset will be extended if necessary to fulfill the request with a single crop() call.
 # This new version is then stored for further calls.
 # The slices parameter expects the (left, right, top, bottom) slices where left and right are an x value measured from the image's left and the top and bottom are a y value measured from the image's top.
-class sliced_r(renderable):
+class sliced_asset:
 	def __init__(self, fn, slices):
 		self.img = pg.image.load(fn).convert_alpha()
 		
@@ -250,46 +230,16 @@ class sliced_r(renderable):
 				return self.parts[2][1].subsurface((0, 0, self.srce_col_ws[2], h))
 			elif y == 2:
 				return self.parts[2][2]
-	
-	def cache(self, w):
-		self.final = pg.Surface((w.w, w.h)).convert_alpha()
-		
-		# These are the values that the sliced lines correspond to in the display's global coordinates.
-		l_slice = self.srce_x_slices[1]
-		r_slice = w.w - self.srce_col_ws[2]
-		t_slice = self.srce_y_slices[1]
-		b_slice = w.h - self.srce_row_hs[2]
-		
-		mid_slice_w = r_slice - l_slice
-		mid_slice_h = b_slice - t_slice
-		
-		# Draw corners
-		self.final.blit(self.get_crop(0, 0), (0, 0))
-		self.final.blit(self.get_crop(2, 0), (r_slice, 0))
-		self.final.blit(self.get_crop(0, 2), (0, b_slice))
-		self.final.blit(self.get_crop(2, 2), (r_slice, b_slice))
-		
-		# Draw edges
-		self.final.blit(self.get_crop(0, 1, h=mid_slice_h), (0, t_slice))
-		self.final.blit(self.get_crop(2, 1, h=mid_slice_h), (r_slice, t_slice))
-		self.final.blit(self.get_crop(1, 0, w=mid_slice_w), (l_slice, 0))
-		self.final.blit(self.get_crop(1, 2, w=mid_slice_w), (l_slice, b_slice))
-		
-		# Draw middle
-		self.final.blit(self.get_crop(1, 1, w=mid_slice_w, h=mid_slice_h), (l_slice, t_slice))
-	
-	def render(self, screen, w):
-		screen.blit(self.final, (w.l, w.t))
 
 # Defines a widget. A widget has a bounding box that is cached and recalculated whenever the widgets size is changed.
 # Each of the four edges have an anchor, whose position is defined as a fraction of the parent element's width (for vertical edges) or height (for horizontal edges).
 # The corresponding edge of the widget's bounding box is defined as an offset from that anchor's position, in pixels.
 class widget:
-	def __init__(self, r=ui_rect(), rend=None, name=""):
+	def __init__(self, r=ui_rect(), draw_hitbox=None, name=""):
 		# Child widgets
 		self.children = []
 		
-		self.rend = rend
+		self.draw_hitbox = draw_hitbox
 		
 		# If True, this widget and all its children will not be recursively cached or rendered.
 		self.hidden = False
@@ -366,17 +316,20 @@ class widget:
 #				print("  "*rd + "Caching \"" + c.name + "\" (" + str(type(c)) + ")")
 				c.cache_r(rd+1)
 	
-	# Call the renderable's render function.
+	# Draw this sprite to the passed screen. This function should be overridden by inheriting classes.
 	def render(self, screen):
-		self.rend.render(screen, self)
+		pass
 	
 	def render_hitbox(self, screen):
-		pg.draw.rect(screen, self.rend, (self.l, self.t, self.w, self.h), width=3)
+		pg.draw.rect(screen, self.draw_hitbox, (self.l, self.t, self.w, self.h), width=3)
 		
 	# Call render recursively
 	def render_r(self, screen):
 		if not self.hidden:
 			self.render(screen)
+			
+			if self.draw_hitbox is not None:
+				self.render_hitbox(screen)
 			
 			for c in self.children:
 				c.render_r(screen)
@@ -414,8 +367,8 @@ class widget:
 # If fn is a list of strings, each will be opened and can be switched between with set_img()
 # This widget should not be used for animated sprites.
 class image_w(widget):
-	def __init__(self, fn, r=ui_rect(), rend=None, name="", iw=None, ih=None, h_align=LEFT_ALIGN, v_align=TOP_ALIGN):
-		widget.__init__(self, r, rend, name)
+	def __init__(self, fn, r=ui_rect(), draw_hitbox=None, name="", iw=None, ih=None, h_align=LEFT_ALIGN, v_align=TOP_ALIGN):
+		widget.__init__(self, r, draw_hitbox, name)
 		
 		self.iw = iw
 		self.ih = ih
@@ -477,10 +430,75 @@ class image_w(widget):
 	def get_img(self):
 		return self.cur_img
 
+# Used to represent assets that are not yet available. This is exactly like image, except instead of specifying the image filename, You specify text to be written on the placeholder.
+# If iw and ih must be specified
+class placeholder_w(widget):
+	def __init__(self, fn, r=ui_rect(), draw_hitbox=None, color=(0, 0, 0), name="", iw=None, ih=None, h_align=LEFT_ALIGN, v_align=TOP_ALIGN):
+		widget.__init__(self, r, draw_hitbox, name)
+		
+		self.iw = iw
+		self.ih = ih
+		
+		self.h_align = h_align
+		self.v_align = v_align
+		
+		self.fnt = pg.font.SysFont(pg.font.get_fonts()[0], 12)
+		
+		self.cur_img = 0
+		
+		self.color = color
+		
+		self.imgs = []
+		if type(fn) is str:
+			self.imgs.append(fn)
+			self.img = self.imgs[0]
+		else:
+			for i in fn:
+				self.imgs.append(i)
+			self.img = self.imgs[0]
+			
+	def render(self, screen):
+		if self.iw is None:
+			iw = self.r - self.l
+		else:
+			iw = self.iw
+		
+		if self.ih is None:
+			ih = self.b - self.t
+		else:
+			ih = self.ih
+			
+		if self.h_align == CENTER_ALIGN:
+			x = self.l + (self.r - self.l)/2 - iw/2
+		elif self.h_align == RIGHT_ALIGN:
+			x = self.r - iw
+		else:
+			x = self.l
+		
+		if self.v_align == CENTER_ALIGN:
+			y = self.t + (self.b - self.t)/2 - ih/2
+		elif self.v_align == BOTTOM_ALIGN:
+			y = self.b - ih
+		else:
+			y = self.t
+			
+		pg.draw.rect(screen, self.color, (x, y, iw, ih), width=3)
+		
+		tsurf = self.fnt.render(self.img, True, self.color)
+		screen.blit(tsurf, (x+4, y+4))
+		
+	
+	def set_img(self, i):
+		self.img = self.imgs[i]
+		self.cur_img = i
+	
+	def get_img(self):
+		return self.cur_img
+
 # Represents a button. Buttons add events to the pygame queue when their bounding box is clicked.
 class button_w(widget):
-	def __init__(self, text, fnt, color, callback, r=ui_rect(), rend=None, name="", params=()):
-		widget.__init__(self, r, rend, name)
+	def __init__(self, text, fnt, color, callback, r=ui_rect(), draw_hitbox=None, name="", params=()):
+		widget.__init__(self, r, draw_hitbox, name)
 		
 		self.text = text
 		self.callback = callback
@@ -504,8 +522,8 @@ class button_w(widget):
 
 # Represents a text box. Text will be wrapped automatically and rendered in the bounding box if possible.
 class label_w(widget):
-	def __init__(self, txt, fnt, color, r=ui_rect(), rend=renderable(), name="", antialias=True, gap=10, lmar=10, rmar=10, tmar=10, bmar=10, h_align=LEFT_ALIGN, v_align=TOP_ALIGN):
-		widget.__init__(self, r, rend, name)
+	def __init__(self, txt, fnt, color, r=ui_rect(), draw_hitbox=None, name="", antialias=True, gap=10, lmar=10, rmar=10, tmar=10, bmar=10, h_align=LEFT_ALIGN, v_align=TOP_ALIGN):
+		widget.__init__(self, r, draw_hitbox, name)
 		
 		self.txt = txt
 		self.fnt = fnt
@@ -606,8 +624,6 @@ class label_w(widget):
 		del self.splits[-1]
 	
 	def render(self, screen):
-		self.rend.render(screen, self)
-		
 		lines_height = len(self.lines) * (self.gap + self.fnt.get_height()) - self.gap
 		
 		# Set top_pix to the y-value of the top of the first line.
@@ -696,10 +712,10 @@ class label_w(widget):
 		self.cache()
 	
 class entry_w(widget):
-	def __init__(self, txt, fnt, color, r=ui_rect(), rend=rect_r((255, 255, 255)), name="", bg=(255, 255, 255), antialias=True, gap=10, lmar=10, rmar=10, tmar=10, bmar=10, h_align=LEFT_ALIGN, v_align=TOP_ALIGN, return_behavior=None, params=()):
-		widget.__init__(self, r, rend, name)
+	def __init__(self, txt, fnt, color, r=ui_rect(), draw_hitbox=None, name="", bg=(255, 255, 255), antialias=True, gap=10, lmar=10, rmar=10, tmar=10, bmar=10, h_align=LEFT_ALIGN, v_align=TOP_ALIGN, return_behavior=None, params=()):
+		widget.__init__(self, r, draw_hitbox, name)
 		
-		self.rend = rend
+		self.bg = bg
 		
 		self.params = params
 		
@@ -758,7 +774,7 @@ class entry_w(widget):
 			self.cur = lbl.get_pos(*e.pos)
 	
 	def render(self, screen):
-		self.rend.render(screen, self)
+		pg.draw.rect(screen, self.bg, (self.l, self.t, self.w, self.h))
 	
 	def set_text(self, s):
 		self.children[0].set_text(s)
@@ -766,14 +782,27 @@ class entry_w(widget):
 	def get_text(self):
 		return self.children[0].txt
 
+class rect_w(widget):
+	def __init__(self, color, r=ui_rect, draw_hitbox=None, name=""):
+		widget.__init__(self, r, draw_hitbox, name)
+		
+		self.color = color
+	
+	def post_cache(self):
+		self.block = pg.Surface((self.w, self.h)).convert_alpha()
+		self.block.fill(self.color)
+	
+	def render(self, screen):
+		screen.blit(self.block, (self.l, self.t))
+
 # A list of items, only some of which may be visible. Scrolling moves the list up or down.
 # "Options" should be an iterable of widgets that may have children. Use widget.clone() to create copies of a template that you can then modify to produce the list.
 # These widgets will be displayed option_height pixels below the previous one by modifying their ta, ba, to, and bo values.
 # Their ui_rect is entirely controlled by the parent object. spacing should be controlled by the spacing object passed to the constructor.
 # It is important that the child widgets don't have colliders (widget.collide() isn't overridden). Otherwise the clicked event won't go to the list itself and your callback won't be called.
 class v_scrolling_list_w(widget):
-	def __init__(self, options, option_height, num_options_shown, callback, r=ui_rect, rend=renderable(), name="", spacing=ui_spacing()):
-		widget.__init__(self, r, rend, name)
+	def __init__(self, options, option_height, num_options_shown, callback, r=ui_rect, draw_hitbox=None, name="", spacing=ui_spacing()):
+		widget.__init__(self, r, draw_hitbox, name)
 		
 		self.s = spacing
 		
@@ -853,11 +882,46 @@ class v_scrolling_list_w(widget):
 # A 9-sliced image. The image is segmented into 9 rectangles by four lines, 2 vertical and 2 horizontal.
 # These lines are specified in the constructor for the sliced_asset object passed in the sliced parameter
 class sliced_image_w(widget):
-	def __init__(self, r=ui_rect, rend=renderable(), name=""):
-		widget.__init__(self, r, rend, name)
+	def __init__(self, sliced, r=ui_rect, draw_hitbox=None, name=""):
+		widget.__init__(self, r, draw_hitbox, name)
+		
+		self.sliced = sliced
+		
+		self.final = None
 	
 	def post_cache(self):
-		self.rend.cache(self)
+		s = time.time()
+		
+		self.final = pg.Surface((self.w, self.h)).convert_alpha()
+		
+		# These are the values that the sliced lines correspond to in the display's global coordinates.
+		l_slice = self.sliced.srce_x_slices[1]
+		r_slice = self.w - self.sliced.srce_col_ws[2]
+		t_slice = self.sliced.srce_y_slices[1]
+		b_slice = self.h - self.sliced.srce_row_hs[2]
+		
+		mid_slice_w = r_slice - l_slice
+		mid_slice_h = b_slice - t_slice
+		
+		# Draw corners
+		self.final.blit(self.sliced.get_crop(0, 0), (0, 0))
+		self.final.blit(self.sliced.get_crop(2, 0), (r_slice, 0))
+		self.final.blit(self.sliced.get_crop(0, 2), (0, b_slice))
+		self.final.blit(self.sliced.get_crop(2, 2), (r_slice, b_slice))
+		
+		# Draw edges
+		self.final.blit(self.sliced.get_crop(0, 1, h=mid_slice_h), (0, t_slice))
+		self.final.blit(self.sliced.get_crop(2, 1, h=mid_slice_h), (r_slice, t_slice))
+		self.final.blit(self.sliced.get_crop(1, 0, w=mid_slice_w), (l_slice, 0))
+		self.final.blit(self.sliced.get_crop(1, 2, w=mid_slice_w), (l_slice, b_slice))
+		
+		# Draw middle
+		self.final.blit(self.sliced.get_crop(1, 1, w=mid_slice_w, h=mid_slice_h), (l_slice, t_slice))
+		
+		print(time.time() - s)
+	
+	def render(self, screen):
+		screen.blit(self.final, (self.l, self.t))
 
 class layout:
 	def __init__(self, screen):
